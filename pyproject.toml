@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tilelang-devkit"
+version = "0.1.0"
+description = "Developer tooling for tilelang (currently: IR pass tracing)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "tilelang-devkit contributors" },
+]
+keywords = ["tvm", "tilelang", "compiler", "debug", "trace", "ir", "pass"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Software Development :: Debuggers",
+]
+# Zero hard dependencies: this package only uses the Python stdlib.
+# tvm and tilelang are required at runtime (when enable() is called) but are
+# NOT declared as dependencies — they are typically installed from source or
+# provided by the NPU environment, not from PyPI.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "ruff>=0.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/erhsh/tilelang-devkit"
+Repository = "https://github.com/erhsh/tilelang-devkit"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tilelang_devkit = ["py.typed"]
+
+[tool.ruff]
+target-version = "py38"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "SIM"]
+ignore = [
+    "E402",   # Module level import not at top of file
+    "E501",   # Line too long
+    "E741",   # Ambiguous variable name
+    "SIM108", # if-else instead of ternary
+    "SIM115", # open file without context manager
+    "B905",   # zip without strict
+]
