@@ -25,4 +25,23 @@ except ImportError:
     __commit__ = "unknown"
     __commit_date__ = "unknown"
 
+# When a wheel is built from sdist, setuptools-scm re-renders _version.py
+# without .git access, causing __commit__/__commit_date__ to become "None".
+# Fall back to scm_version.json which is correctly preserved from the sdist
+# build step (it lives in the dist-info metadata directory).
+if __commit__ in (None, "None") or __commit_date__ in (None, "None"):
+    try:
+        import json as _json
+        from importlib.metadata import distribution as _distribution
+
+        _meta = _distribution("tilelang-devkit").read_text("scm_version.json")
+        if _meta is not None:
+            _scm = _json.loads(_meta)
+            if __commit__ in (None, "None"):
+                __commit__ = _scm.get("node", "unknown")
+            if __commit_date__ in (None, "None"):
+                __commit_date__ = _scm.get("node_date", "unknown")
+    except Exception:
+        pass
+
 __all__ = ["__commit__", "__commit_date__", "__version__"]
