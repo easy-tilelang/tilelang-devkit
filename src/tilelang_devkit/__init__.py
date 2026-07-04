@@ -14,12 +14,15 @@ Usage::
 
 from __future__ import annotations
 
-from importlib.metadata import version as _pkg_version
-
 try:
-    __version__ = _pkg_version("tilelang-devkit")
-except Exception:
-    # Fallback for source checkout without installation
+    from ._version import __commit__ as __commit__
+    from ._version import __commit_date__ as __commit_date__
+    from ._version import __version__ as __version__
+except ImportError:
+    # Fallback when _version.py hasn't been generated yet (e.g. bare clone
+    # without pip install, or building from a zip without .git).
     __version__ = "0.0.0+unknown"
+    __commit__ = "unknown"
+    __commit_date__ = "unknown"
 
-__all__ = ["__version__"]
+__all__ = ["__commit__", "__commit_date__", "__version__"]
