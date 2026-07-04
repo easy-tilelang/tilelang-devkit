@@ -25,7 +25,7 @@ def test_import():
         trace,
     )
 
-    assert tilelang_devkit.__version__ == "0.1.0"
+    assert tilelang_devkit.__version__ != "0.0.0+unknown"  # must be installed
     assert STATUS_COMPLETED == "completed"
     assert STATUS_FAILED == "failed"
     assert STATUS_SKIPPED == "skipped"

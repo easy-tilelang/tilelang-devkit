@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=61", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tilelang-devkit"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Developer tooling for tilelang (currently: IR pass tracing)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -48,6 +48,13 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 tilelang_devkit = ["py.typed"]
+
+# Version is derived from git tags by setuptools-scm.
+# Tags use the "v" prefix (e.g. v0.1.0). Between tags, the version
+# auto-increments as 0.1.1.devN+g<hash>.
+# local_scheme = "no-local-version" strips the +g<hash> suffix so PyPI accepts it.
+[tool.setuptools_scm]
+local_scheme = "no-local-version"
 
 [tool.ruff]
 target-version = "py38"
