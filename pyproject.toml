@@ -40,8 +40,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/erhsh/tilelang-devkit"
-Repository = "https://github.com/erhsh/tilelang-devkit"
+Homepage = "https://github.com/easy-tilelang/tilelang-devkit"
+Repository = "https://github.com/easy-tilelang/tilelang-devkit"
 
 [tool.setuptools.packages.find]
 where = ["src"]

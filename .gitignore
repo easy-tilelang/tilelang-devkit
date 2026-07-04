@@ -25,6 +25,9 @@ env/
 *.swp
 *.swo
 
+# Stray tool artifacts
+.pkl_memoize_py3/
+
 # Testing
 .pytest_cache/
 .ruff_cache/
