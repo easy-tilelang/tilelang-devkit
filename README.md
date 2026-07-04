@@ -9,8 +9,24 @@ unified diff to the terminal and saves the raw IR to disk.
 
 ## Install
 
+From PyPI (once published):
+
 ```bash
 pip install tilelang-devkit
+```
+
+From source (editable, recommended for development):
+
+```bash
+git clone https://github.com/easy-tilelang/tilelang-devkit.git
+cd tilelang-devkit
+pip install -e .
+```
+
+Or install directly from git:
+
+```bash
+pip install git+https://github.com/easy-tilelang/tilelang-devkit.git
 ```
 
 > **Note:** `tilelang-devkit` has zero hard dependencies (Python stdlib only).
