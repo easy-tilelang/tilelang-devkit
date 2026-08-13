@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61", "setuptools-scm>=8", "wheel"]
+requires = ["setuptools>=77", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,8 +7,8 @@ name = "tilelang-devkit"
 dynamic = ["version"]
 description = "Developer tooling for tilelang (currently: IR pass tracing)"
 readme = "README.md"
-requires-python = ">=3.8"
-license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+license = "Apache-2.0"
 authors = [
     { name = "tilelang-devkit contributors" },
 ]
@@ -16,11 +16,8 @@ keywords = ["tvm", "tilelang", "compiler", "debug", "trace", "ir", "pass"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -32,6 +29,9 @@ classifiers = [
 # NOT declared as dependencies — they are typically installed from source or
 # provided by the NPU environment, not from PyPI.
 dependencies = []
+
+[project.entry-points."tilelang.instrumentation_tools"]
+lower_trace = "tilelang_devkit.lower_trace.tilelang_adapter:activate"
 
 [project.optional-dependencies]
 dev = [

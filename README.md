@@ -1,162 +1,119 @@
 # tilelang-devkit
 
-Developer tooling for [tilelang](https://github.com/TileLang-Ascend).
+Developer tooling for [TileLang](https://github.com/tile-ai/tilelang).
 
-Currently ships **`lower_trace`** — a zero-intrusion IR pass tracing tool that
-monkey-patches TVM's `Pass.__call__` and tilelang's phase functions to
-automatically capture IR before/after every compilation pass, then prints a
-unified diff to the terminal and saves the raw IR to disk.
+The package currently ships `lower_trace`, a pass-by-pass IR tracing tool built
+on TVM `PassInstrument` and TileLang's compilation instrumentation interfaces.
+It records raw before/after IR, prints terminal diffs, and generates a
+self-contained HTML report without patching TVM globals.
 
 ## Install
-
-From PyPI (once published):
 
 ```bash
 pip install tilelang-devkit
 ```
 
-From source (editable, recommended for development):
+The package has no hard dependencies. Install it into the Python environment
+that already provides the compatible TileLang/TVM build you want to inspect.
+Python 3.10 or newer is required.
+
+For development:
 
 ```bash
 git clone https://github.com/easy-tilelang/tilelang-devkit.git
 cd tilelang-devkit
-pip install -e .
+pip install -e '.[dev]'
 ```
 
-Or install directly from git:
+## Trace a complete TileLang compilation
+
+Compatible TileLang versions discover the package through the
+`tilelang.instrumentation_tools` entry point:
 
 ```bash
-pip install git+https://github.com/easy-tilelang/tilelang-devkit.git
+TL_LOWER_TRACE=both python kernel.py
 ```
 
-> **Note:** `tilelang-devkit` has zero hard dependencies (Python stdlib only).
-> The actual tracing requires `tvm` + `tilelang` at runtime — install tilelang
-> first from the [tilelang-ascend](https://github.com/TileLang-Ascend) project.
+Supported values are `terminal`, `html`, and `both`. The truthy shorthand
+values `1`, `true`, `yes`, and `on` select `html`; `0`, `false`, `no`, and
+`off` disable tracing.
 
-## Quick start
+Reports are written below `./tmp/lower_trace_dir/<script-name>/` by default.
+Select another base directory with:
+
+```bash
+TL_LOWER_TRACE=both \
+TL_LOWER_TRACE_DIR="$PWD/tmp/lower_trace_dir" \
+python kernel.py
+```
+
+The latest report is available as `<script-name>/report.html`; immutable run
+data lives under `<script-name>/.run_records/run_<timestamp>_<pid>_<id>/`.
+If TileLang serves a cached compilation result, no lowering passes execute and
+there is nothing new to trace; disable the TileLang kernel cache when you need
+a fresh compilation trace.
+
+Tracing can also be controlled from Python:
 
 ```python
-import tilelang
-import tilelang.language as T
+import tilelang_devkit.lower_trace as lt
+
+lt.enable(mode="both", trace_dir="./traces")
+# tilelang.compile(...)
+lt.disable()
+```
+
+The v0.1 context-manager API remains available and selects terminal mode:
+
+```python
 from tilelang_devkit.lower_trace import trace
 
-@tilelang.jit(out_idx=[-1])
-def vec_add(M, N, block_M, block_N, dtype="float"):
-    @T.prim_func
-    def main(A: T.Tensor((M, N), dtype), B: T.Tensor((M, N), dtype), C: T.Tensor((M, N), dtype)):
-        with T.Kernel(M // block_M, is_npu=True) as (cid,):
-            a_ub = T.alloc_ub((block_M, block_N), dtype)
-            b_ub = T.alloc_ub((block_M, block_N), dtype)
-            c_ub = T.alloc_ub((block_M, block_N), dtype)
-            with T.Scope("V"):
-                T.copy(A[cid * block_M, 0], a_ub)
-                T.copy(B[cid * block_M, 0], b_ub)
-                T.barrier_all()
-                T.tile.add(c_ub, a_ub, b_ub)
-                T.barrier_all()
-                T.copy(c_ub, C[cid * block_M, 0])
-    return main
-
-with trace():                       # start tracing
-    func = vec_add(256, 256, 128, 256)
-# hooks auto-removed on exit
+with trace(trace_dir="./traces"):
+    # compile a TileLang kernel
+    ...
 ```
 
-### Manual enable/disable
+## Trace selected TVM passes
+
+Apply and compare a fixed pass chain:
 
 ```python
-from tilelang_devkit.lower_trace import enable, disable
+import tilelang_devkit.lower_trace as lt
 
-enable()                            # install hooks
-func = vec_add(256, 256, 128, 256)  # compile under trace
-disable()                           # remove hooks
+results = lt.lower_trace(
+    mod,
+    [("Simplify", simplify_pass)],
+    mode="both",
+    html_path="lower-trace.html",
+)
 ```
 
-### Custom output directory
+Or instrument an existing `PassContext`:
 
 ```python
-with trace(trace_dir="/tmp/my_trace"):
-    func = vec_add(256, 256, 128, 256)
+from tvm.ir.transform import PassContext
+import tilelang_devkit.lower_trace as lt
+
+instrument = lt.create_pass_instrument(mode="html", trace_dir="./traces")
+with PassContext(instruments=[instrument]):
+    with lt.phase("optimization"):
+        # run TVM passes
+        ...
+instrument.finish()
 ```
 
-## Output
+## Public API
 
-### Terminal
+- `lower_trace(...)`: run and compare selected passes.
+- `create_pass_instrument(...)`: create a standalone TVM pass instrument.
+- `phase(name)`: label records produced by the standalone instrument.
+- `enable(...)`, `disable()`, `reset()`: control future TileLang sessions.
+- `trace(trace_dir=None)`: compatibility context manager.
+- `LowerRecord`: one pass or code-generation record.
 
-Each pass prints a status line and, if the IR changed, a unified diff:
-
-```
-  [lower_trace] phase1_LowerAndLegalize/00_InjectTmpBuffer: NO-OP
-  [lower_trace] phase1_LowerAndLegalize/03_BufferShapeCollector: CHANGED
-  --- phase1_LowerAndLegalize/BufferShapeCollector (before)
-  +++ phase1_LowerAndLegalize/BufferShapeCollector (after)
-  @@ -5,6 +5,10 @@
-   class Module:
-       @T.prim_func
-       def main(...):
-   +        a_ub = T.handle("float32", "shared")
-   +        ...
-  [lower_trace] codegen/38_codegen: CODEGEN (+54/-22)
-```
-
-### Disk
-
-Raw IR files are saved under `./tmp/lower_trace/` (or your `trace_dir`):
-
-```
-./tmp/lower_trace/run_<timestamp>_<pid>/
-├── phase1_LowerAndLegalize/
-│   ├── 00_Simplify_before.tir      # IR before the pass
-│   ├── 00_Simplify_after.tir       # IR after the pass
-│   └── ...
-├── phase2_OptimizeForTarget/
-│   └── ...
-├── unscoped/                       # passes outside any phase
-│   └── ...
-└── codegen/
-    ├── 38_codegen_before.tir       # final lowered TIR
-    └── 38_codegen_after.cpp        # generated C++ source
-```
-
-## How it works
-
-`enable()` installs three layers of monkey-patch hooks:
-
-| Layer | Hook | Purpose |
-|-------|------|---------|
-| 1 | `Pass.__call__ = _traced_pass_call` | Intercept **all** TVM Pass calls — snapshot before/after IR, compute diff, record |
-| 2 | phase functions = `_wrap_phase(...)` | Set `_current_phase` so Layer 1 knows which phase each pass belongs to |
-| 3 | codegen FFI = `_wrap_codegen_ffi(...)` | Intercept TIR→C++ conversion, capture final IR and generated source |
-
-`disable()` restores all originals (fully reversible).
-
-## API reference (`tilelang_devkit.lower_trace`)
-
-### `trace(*, trace_dir=None)` — context manager
-Enables tracing on entry, disables on exit (even on exception).
-
-### `enable(*, trace_dir=None)`
-Install hooks. Idempotent. Raises `RuntimeError` if `tvm` is not installed.
-
-### `disable()`
-Remove all hooks and restore originals. Clears records.
-
-### `reset()`
-Clear collected records without removing hooks.
-
-### `LowerRecord` (dataclass)
-Fields: `phase`, `name`, `index`, `before_text`, `after_text`, `changed`, `add_lines`, `del_lines`, `status`, `error_msg`.
-
-### Status constants
-`STATUS_COMPLETED`, `STATUS_FAILED`, `STATUS_SKIPPED`, `STATUS_CODEGEN`.
-
-## Graceful degradation
-
-| Environment | Behavior |
-|-------------|----------|
-| tvm + tilelang | Full tracing (Pass + phase labels + codegen) |
-| tvm only | Pass tracing works; all passes tagged `unscoped`; codegen FFI wrapping prints warnings |
-| no tvm | `enable()` raises `RuntimeError`; `import tilelang_devkit.lower_trace` still works |
+Importing `tilelang_devkit.lower_trace` does not eagerly import TileLang. The
+TileLang-specific adapter is loaded only when its API or plugin entry point is
+used.
 
 ## License
 
