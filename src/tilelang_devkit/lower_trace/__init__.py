@@ -22,6 +22,16 @@ from .model import (
 _UNSET = object()
 
 
+def activate() -> None:
+    """Load the TileLang adapter only when environment tracing is enabled."""
+    from .config import env_mode
+
+    if env_mode() is not None:
+        from .tilelang_adapter import enable
+
+        enable()
+
+
 def create_pass_instrument(*, mode=None, trace_dir=None, context: int = 3):
     """Create a standalone TVM ``PassInstrument`` trace collector."""
     from .tvm_adapter import create_pass_instrument as _create
@@ -42,8 +52,7 @@ def enable(*, mode=_UNSET, trace_dir=_UNSET, codegen_output=_UNSET) -> None:
         from .tilelang_adapter import enable as _enable
     except (ImportError, ModuleNotFoundError) as exc:
         raise RuntimeError(
-            "lower_trace requires a TileLang build that provides "
-            "tilelang.instrumentation"
+            "lower_trace requires a TileLang build that provides tilelang.instrumentation"
         ) from exc
 
     kwargs = {}

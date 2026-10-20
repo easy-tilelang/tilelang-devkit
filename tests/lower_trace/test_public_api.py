@@ -43,3 +43,25 @@ def test_package_import_does_not_eagerly_import_tilelang(monkeypatch):
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_disabled_plugin_does_not_import_tilelang_adapter():
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    env["TL_LOWER_TRACE"] = "off"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys, tilelang; "
+            "assert 'tilelang_devkit.lower_trace.tilelang_adapter' not in sys.modules; "
+            "assert 'tilelang.tools.lower_trace' not in sys.modules",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr

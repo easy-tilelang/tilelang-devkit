@@ -7,7 +7,7 @@ import pytest
 import tempfile
 
 # Clear any inherited TL_LOWER_TRACE* env before importing tilelang so the
-# import-time activation hook in ``tilelang/__init__.py`` cannot fire during
+# plugin activation hook in ``tilelang/__init__.py`` cannot fire during
 # pytest collection. The autouse ``_isolate_env`` fixture below handles
 # per-test isolation; this guard prevents leaks across collected modules.
 # The caller's original env values are restored immediately after import so
@@ -22,6 +22,7 @@ try:
     import tilelang.testing
     import tilelang.language as T
     from tilelang import tvm
+
     try:
         import tilelang.instrumentation  # noqa: F401
     except ImportError:
@@ -56,9 +57,9 @@ def _simple_program():
 
     @T.prim_func
     def program(A: T.Tensor((128,), "float32"), B: T.Tensor((128,), "float32")):
-        with T.Kernel(threads=128):
-            tid = T.get_thread_binding()
-            B[tid] = A[tid] + 1.0
+        with T.Kernel(1):
+            for i in T.serial(128):
+                B[i] = A[i] + 1.0
 
     return program
 
@@ -207,9 +208,9 @@ def test_multiple_pipelines_share_one_compile_session(monkeypatch, tmp_path):
 
     @T.prim_func
     def tiny(A: T.Tensor((32,), "float32"), B: T.Tensor((32,), "float32")):
-        with T.Kernel(32):
-            tid = T.get_thread_binding()
-            B[tid] = A[tid] + 1.0
+        with T.Kernel(1):
+            for i in T.serial(32):
+                B[i] = A[i] + 1.0
 
     mod = tvm.IRModule({"main": tiny})
     context = create_backend_context("c", "c", "cython")
@@ -253,7 +254,9 @@ def test_diff_html_line_numbers_monotone():
 
     left, right = [], []
     for row in re.finditer(r"<tr[^>]*>(.*?)</tr>", html, re.S):
-        for side, txt in re.findall(r'<td class="ln[^"]*"\s+data-side="([lr])"[^>]*>(\d*)</td>', row.group(1)):
+        for side, txt in re.findall(
+            r'<td class="ln[^"]*"\s+data-side="([lr])"[^>]*>(\d*)</td>', row.group(1)
+        ):
             (left if side == "l" else right).append(int(txt) if txt.strip() else None)
 
     assert left and right, f"no line-number cells parsed:\n{html}"
@@ -300,9 +303,9 @@ def test_no_skipped_phantom_records(monkeypatch, tmp_path):
 
     @T.prim_func
     def tiny(A: T.Tensor((32,), "float32"), B: T.Tensor((32,), "float32")):
-        with T.Kernel(32):
-            tid = T.get_thread_binding()
-            B[tid] = A[tid] + 1.0
+        with T.Kernel(1):
+            for i in T.serial(32):
+                B[i] = A[i] + 1.0
 
     tilelang.lower(tiny, target="c")
 
@@ -346,9 +349,9 @@ def test_terminal_mode_no_html(monkeypatch, tmp_path):
 
         @T.prim_func
         def tiny(A: T.Tensor((32,), "float32"), B: T.Tensor((32,), "float32")):
-            with T.Kernel(32):
-                tid = T.get_thread_binding()
-                B[tid] = A[tid] + 1.0
+            with T.Kernel(1):
+                for i in T.serial(32):
+                    B[i] = A[i] + 1.0
 
         tilelang.lower(tiny, target="c")
 
@@ -358,10 +361,14 @@ def test_terminal_mode_no_html(monkeypatch, tmp_path):
         script_dir = trace.script_dir
         assert script_dir is not None, "script_dir should be set after a run"
         symlink_report = os.path.join(script_dir, "report.html")
-        assert not os.path.exists(symlink_report), f"terminal mode must not write report.html symlink at {symlink_report}"
+        assert not os.path.exists(symlink_report), (
+            f"terminal mode must not write report.html symlink at {symlink_report}"
+        )
         if trace.run_dir is not None:
             run_report = os.path.join(trace.run_dir, "report.html")
-            assert not os.path.exists(run_report), f"terminal mode must not write report.html at {run_report}"
+            assert not os.path.exists(run_report), (
+                f"terminal mode must not write report.html at {run_report}"
+            )
     finally:
         disable()
 
@@ -460,12 +467,12 @@ def _make_trace_session(tmp_path, mode="terminal"):
     )
 
 
-def _run_codegen(session, build, ffi_name, mod="fake_mod", target=None):
+def _run_codegen(session, build, ffi_name, mod="fake_mod", target=None, *, role=None):
     """Exercise the same explicit codegen middleware used by backend registries."""
     from tilelang.instrumentation import CodegenEvent
 
     return session.run_codegen(
-        CodegenEvent(name=ffi_name, mod=mod, target=target),
+        CodegenEvent(name=ffi_name, mod=mod, target=target, role=role),
         lambda: build(mod) if target is None else build(mod, target),
     )
 
@@ -487,7 +494,10 @@ def test_pass_instrument_captures_nested_tvm_passes(tmp_path):
 
     records = [record for record in trace.records if record.name in ("Outer", "Simplify")]
     assert [record.name for record in records] == ["Outer", "Simplify"]
-    assert [(record.depth, record.parent_index) for record in records] == [(0, None), (1, records[0].index)]
+    assert [(record.depth, record.parent_index) for record in records] == [
+        (0, None),
+        (1, records[0].index),
+    ]
 
     assert trace.run_dir is not None
     report_path = os.path.join(trace.run_dir, "report.html")
@@ -499,7 +509,7 @@ def test_pass_instrument_captures_nested_tvm_passes(tmp_path):
 
 def test_direct_tilelang_lower_owns_an_instrumentation_session(tmp_path):
     """Programmatic enable traces direct lower() without mutating a global context."""
-    from tilelang.tools.lower_trace import enable
+    from tilelang_devkit.lower_trace import enable
 
     enable(mode="terminal", trace_dir=str(tmp_path), codegen_output=None)
     artifact = tilelang.lower(_simple_program(), target="c")
@@ -549,7 +559,10 @@ def _patch_make_patched_source_module():
     """Patch _make_patched_source_module so tests avoid the real TVM C++ FFI."""
     from unittest.mock import patch
 
-    with patch("tilelang_devkit.lower_trace.tilelang_adapter._make_patched_source_module", side_effect=_patched_module_factory) as mock:
+    with patch(
+        "tilelang_devkit.lower_trace.tilelang_adapter._make_patched_source_module",
+        side_effect=_patched_module_factory,
+    ) as mock:
         yield mock
 
 
@@ -570,7 +583,9 @@ def test_codegen_proxy_for_without_compile(tmp_path):
             f.write(edited)
 
         result2 = _run_codegen(trace, mock_build, ffi_name)
-        assert mock_factory.called, "_make_patched_source_module should be called for _without_compile FFI"
+        assert mock_factory.called, (
+            "_make_patched_source_module should be called for _without_compile FFI"
+        )
         assert result2.get_source() == edited, "Patched module should return the user-edited source"
 
 
@@ -666,8 +681,52 @@ def test_codegen_synced(tmp_path):
         result2 = _run_codegen(trace, _make_mock_build(source_v2), ffi_name)
         with open(original_path) as f:
             assert f.read() == source_v2
-        assert mock_factory.called, "SYNCED should call _make_patched_source_module for _without_compile FFI"
+        assert mock_factory.called, (
+            "SYNCED should call _make_patched_source_module for _without_compile FFI"
+        )
         assert result2.get_source() == source_v2
+
+
+@pytest.mark.parametrize("explicit_path", [False, True])
+def test_host_and_device_codegen_keep_independent_edits(tmp_path, explicit_path):
+    """Host codegen must preserve device edits and use its own baseline."""
+    kwargs = {"codegen_output": str(tmp_path / "kernel.cpp")} if explicit_path else {}
+    session = _core.LowerTraceSession(mode="html", trace_dir=str(tmp_path), **kwargs)
+    ffi_name = "target.build.tilelang_c"
+    device_source = "// device source\n"
+    host_source = "// host wrapper\n"
+    edited_source = "// edited device source\n"
+
+    with _patch_make_patched_source_module() as factory:
+        _run_codegen(session, _make_mock_build(device_source), ffi_name, role="device")
+        device_path = session.get_codegen_output_path("device")
+        host_path = session.get_codegen_output_path("host")
+        assert device_path != host_path
+        with open(device_path, "w") as file:
+            file.write(edited_source)
+
+        result = _run_codegen(session, _make_mock_build(host_source), ffi_name, role="host")
+        assert result.get_source() == host_source
+        assert not factory.called
+        with open(device_path) as file:
+            assert file.read() == edited_source
+        for path, source in ((device_path, device_source), (host_path, host_source)):
+            with open(path + ".original") as file:
+                assert file.read() == source
+            with open(path + ".latest") as file:
+                assert file.read() == source
+
+        result = _run_codegen(session, _make_mock_build(device_source), ffi_name, role="device")
+        assert result.get_source() == edited_source
+        assert factory.call_count == 1
+
+    assert [record.name for record in session.records] == [
+        "codegen_device",
+        "codegen_host",
+        "codegen_device",
+    ]
+    assert [record.index for record in session.records] == [0, 1, 2]
+    assert os.path.isfile(os.path.join(session.run_dir, "codegen", "01_codegen_host_after.cpp"))
 
 
 def test_codegen_phase_reset_on_inspect_source_failure(tmp_path):
@@ -703,7 +762,9 @@ def test_codegen_restores_outer_phase(tmp_path):
     source_v1 = "// generated kernel v1\n"
     trace = _make_trace_session(tmp_path)
     with pass_phase("pipeline_test"):
-        _run_codegen(trace, _make_mock_build(source_v1), "target.build.tilelang_cuda_without_compile")
+        _run_codegen(
+            trace, _make_mock_build(source_v1), "target.build.tilelang_cuda_without_compile"
+        )
         assert current_pass_phase() == "pipeline_test", "outer phase must be restored after codegen"
 
 
@@ -740,7 +801,7 @@ def test_codegen_record_index_after_nested_pass(tmp_path):
 
     _run_codegen(trace, mock_build, "target.build.tilelang_cuda_without_compile")
 
-    codegen_records = [record for record in trace.records if record.name == "codegen"]
+    codegen_records = [record for record in trace.records if record.status == _core.STATUS_CODEGEN]
     assert codegen_records, "no codegen record found"
     assert codegen_records[-1].index > nested_idx[0], "codegen index not after nested pass"
     indices = [record.index for record in trace.records]
@@ -774,7 +835,9 @@ def test_import_time_activation(tmp_path):
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, f"subprocess failed (rc={result.returncode}):\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert result.returncode == 0, (
+        f"subprocess failed (rc={result.returncode}):\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
 
 
 if __name__ == "__main__":

@@ -102,6 +102,9 @@ with PassContext(instruments=[instrument]):
 instrument.finish()
 ```
 
+The [full manual](docs/lower_trace.md) covers the HTML viewer, raw IR files,
+host/device source output, and the edit-and-recompile workflow.
+
 ## Public API
 
 - `lower_trace(...)`: run and compare selected passes.

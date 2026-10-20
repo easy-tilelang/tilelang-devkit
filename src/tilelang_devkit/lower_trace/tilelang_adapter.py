@@ -18,9 +18,11 @@ import sys
 import threading
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
+from .config import env_mode, env_trace_dir, parse_mode
+from .model import LowerRecord, STATUS_COMPLETED, STATUS_FAILED, STATUS_SKIPPED, STATUS_CODEGEN
 from tilelang.instrumentation import (
     CodegenEvent,
     IncompletePass,
@@ -46,14 +48,6 @@ from .diff import (
     _ANSI_RESET,
     _ANSI_YELLOW,
 )
-from .config import env_mode, env_trace_dir, parse_mode
-from .model import (
-    LowerRecord,
-    STATUS_CODEGEN,
-    STATUS_COMPLETED,
-    STATUS_FAILED,
-    STATUS_SKIPPED,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -65,7 +59,9 @@ _mode_override: str | None | object = _UNSET
 _trace_dir_override: str | None | object = _UNSET
 _codegen_output_path_override: str | None | object = _UNSET
 _config_lock = threading.RLock()
-_last_session: ContextVar[LowerTraceSession | None] = ContextVar("tilelang_last_lower_trace_session", default=None)
+_last_session: ContextVar[LowerTraceSession | None] = ContextVar(
+    "tilelang_last_lower_trace_session", default=None
+)
 # Explicit ``codegen_output`` paths may intentionally be shared across compile
 # sessions. Serialize only their three-file read/modify/write transaction; pass
 # records and callback state remain entirely session-local.
@@ -226,11 +222,17 @@ class LowerTraceSession(PassInstrumentationTool):
             os.makedirs(self.run_dir, exist_ok=True)
         return self.run_dir
 
-    def get_codegen_output_path(self) -> str | None:
+    def get_codegen_output_path(self, role: Literal["device", "host"] | None = None) -> str | None:
+        """Return the role's working path, or the legacy path for an unspecified role."""
         if self.codegen_output is not _UNSET:
-            return self.codegen_output  # type: ignore[return-value]
+            output_path = self.codegen_output
+            if output_path is None or role != "host":
+                return output_path  # type: ignore[return-value]
+            stem, extension = os.path.splitext(output_path)
+            return f"{stem}_host{extension}"
         if self.should_generate_html:
-            return os.path.join(self.ensure_script_dir(), "codegen.cpp")
+            name = "codegen" if role is None else f"codegen_{role}"
+            return os.path.join(self.ensure_script_dir(), f"{name}.cpp")
         return None
 
     def allocate_index(self) -> int:
@@ -259,7 +261,9 @@ class LowerTraceSession(PassInstrumentationTool):
             with open(after_path, "w", encoding="utf-8") as after_file:
                 after_file.write(record.after_text)
         except Exception as exc:
-            print(f"  {_ANSI_RED}[lower_trace] WARNING: could not save raw trace files: {exc}{_ANSI_RESET}")
+            print(
+                f"  {_ANSI_RED}[lower_trace] WARNING: could not save raw trace files: {exc}{_ANSI_RESET}"
+            )
 
     def update_html_link(self, run_html_path: str) -> None:
         script_dir = self.ensure_script_dir()
@@ -320,23 +324,44 @@ class LowerTraceSession(PassInstrumentationTool):
                 self.flush_html()
 
         if succeeded:
-            print(f"  [lower_trace] pipeline {run_number} ({phase_name}) complete: {len(self.records)} total records")
+            print(
+                f"  [lower_trace] pipeline {run_number} ({phase_name}) complete: {len(self.records)} total records"
+            )
 
     def abort_active_instruments(self, error: BaseException) -> None:
         for instrument in reversed(active_stacked_pass_instruments()):
             observer = instrument.observer
-            if isinstance(observer, _LowerTraceObserver) and observer.session is self and instrument.pending_events:
+            if (
+                isinstance(observer, _LowerTraceObserver)
+                and observer.session is self
+                and instrument.pending_events
+            ):
                 instrument.abort(error)
 
-    def _resolve_codegen_edit(self, codegen_text: str, output_path: str, index: int) -> str | None:
+    def _resolve_codegen_edit(
+        self,
+        codegen_text: str,
+        output_path: str,
+        index: int,
+        *,
+        role: Literal["device", "host"] | None = None,
+    ) -> str | None:
         """Apply the baseline/working/current three-way source workflow."""
         with _codegen_path_lock(output_path):
-            return self._resolve_codegen_edit_locked(codegen_text, output_path, index)
+            return self._resolve_codegen_edit_locked(codegen_text, output_path, index, role=role)
 
-    def _resolve_codegen_edit_locked(self, codegen_text: str, output_path: str, index: int) -> str | None:
+    def _resolve_codegen_edit_locked(
+        self,
+        codegen_text: str,
+        output_path: str,
+        index: int,
+        *,
+        role: Literal["device", "host"] | None = None,
+    ) -> str | None:
         """Resolve one codegen edit while holding the output-path lock."""
         original_path = output_path + ".original"
         latest_path = output_path + ".latest"
+        name = "codegen" if role is None else f"codegen_{role}"
         try:
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
             with open(latest_path, "w", encoding="utf-8") as latest_file:
@@ -346,14 +371,16 @@ class LowerTraceSession(PassInstrumentationTool):
                 if os.path.isfile(output_path):
                     shutil.copyfile(output_path, output_path + ".bak")
                     print(
-                        f"  [lower_trace] codegen/{index:02d}_codegen: INIT-BACKUP — "
+                        f"  [lower_trace] codegen/{index:02d}_{name}: INIT-BACKUP — "
                         f"{_ANSI_BOLD}{_ANSI_YELLOW}{output_path}{_ANSI_RESET} existed without baseline, "
                         f"backed up to {_ANSI_BOLD}{_ANSI_YELLOW}{output_path}.bak{_ANSI_RESET}"
                     )
                 with open(original_path, "w", encoding="utf-8") as original_file:
                     original_file.write(codegen_text)
                 shutil.copyfile(original_path, output_path)
-                print(f"  [lower_trace] codegen source initialized at: {_ANSI_GREEN}{output_path}{_ANSI_RESET}")
+                print(
+                    f"  [lower_trace] {name} source initialized at: {_ANSI_GREEN}{output_path}{_ANSI_RESET}"
+                )
                 return None
 
             with open(original_path, encoding="utf-8") as original_file:
@@ -370,16 +397,20 @@ class LowerTraceSession(PassInstrumentationTool):
                     original_file.write(codegen_text)
                 with open(output_path, "w", encoding="utf-8") as working_file:
                     working_file.write(codegen_text)
-                print(f"  {_ANSI_CYAN}[lower_trace] codegen/{index:02d}_codegen: REGENERATED (codegen changed, no user edits){_ANSI_RESET}")
+                print(
+                    f"  {_ANSI_CYAN}[lower_trace] codegen/{index:02d}_{name}: REGENERATED (codegen changed, no user edits){_ANSI_RESET}"
+                )
                 return None
             if user_edited and not codegen_changed:
-                print(f"  {_ANSI_BOLD}{_ANSI_GREEN}[lower_trace] codegen/{index:02d}_codegen: PATCHED (user edits){_ANSI_RESET}")
+                print(
+                    f"  {_ANSI_BOLD}{_ANSI_GREEN}[lower_trace] codegen/{index:02d}_{name}: PATCHED (user edits){_ANSI_RESET}"
+                )
                 return working_text
             if working_text.rstrip() == codegen_text.rstrip():
                 with open(original_path, "w", encoding="utf-8") as original_file:
                     original_file.write(codegen_text)
                 print(
-                    f"  {_ANSI_BOLD}{_ANSI_GREEN}[lower_trace] codegen/{index:02d}_codegen: "
+                    f"  {_ANSI_BOLD}{_ANSI_GREEN}[lower_trace] codegen/{index:02d}_{name}: "
                     f"SYNCED (user edits and codegen changed to the same source){_ANSI_RESET}"
                 )
                 return working_text
@@ -391,11 +422,11 @@ class LowerTraceSession(PassInstrumentationTool):
             with open(output_path, "w", encoding="utf-8") as working_file:
                 working_file.write(codegen_text)
             print(
-                f"  {_ANSI_BOLD}{_ANSI_YELLOW}[lower_trace] codegen/{index:02d}_codegen: "
+                f"  {_ANSI_BOLD}{_ANSI_YELLOW}[lower_trace] codegen/{index:02d}_{name}: "
                 f"CONFLICT (codegen restored; user edits saved in .bak){_ANSI_RESET}"
             )
         except Exception as exc:
-            print(f"  {_ANSI_RED}[lower_trace] WARNING: codegen file I/O failed: {exc}{_ANSI_RESET}")
+            print(f"  {_ANSI_RED}[lower_trace] WARNING: {name} file I/O failed: {exc}{_ANSI_RESET}")
         return None
 
     def run_codegen(self, event: CodegenEvent, next_call: Callable[[], Any]) -> Any:
@@ -405,7 +436,8 @@ class LowerTraceSession(PassInstrumentationTool):
         if self.should_generate_html:
             self.ensure_run_dir()
         before_text = str(event.mod)
-        output_path = self.get_codegen_output_path()
+        output_path = self.get_codegen_output_path(event.role)
+        name = "codegen" if event.role is None else f"codegen_{event.role}"
 
         try:
             with pass_phase("codegen"):
@@ -416,7 +448,7 @@ class LowerTraceSession(PassInstrumentationTool):
             self.append_record(
                 LowerRecord(
                     phase="codegen",
-                    name="codegen",
+                    name=name,
                     index=index,
                     before_text=before_text,
                     after_text="",
@@ -425,7 +457,7 @@ class LowerTraceSession(PassInstrumentationTool):
                     error_msg=str(error),
                 )
             )
-            print(f"  [lower_trace] codegen/{index:02d}_codegen: FAILED ({error})")
+            print(f"  [lower_trace] codegen/{index:02d}_{name}: FAILED ({error})")
             raise
 
         # Allocate after the backend call: passes invoked by codegen must sort
@@ -437,13 +469,15 @@ class LowerTraceSession(PassInstrumentationTool):
         try:
             codegen_text = _inspect_module_source(result)
             if output_path:
-                patched_text = self._resolve_codegen_edit(codegen_text, output_path, index)
+                patched_text = self._resolve_codegen_edit(
+                    codegen_text, output_path, index, role=event.role
+                )
             after_text = patched_text if patched_text is not None else codegen_text
             add_count, del_count = _count_line_changes(before_text, after_text)
             self.append_record(
                 LowerRecord(
                     phase="codegen",
-                    name="codegen",
+                    name=name,
                     index=index,
                     before_text=before_text,
                     after_text=after_text,
@@ -454,17 +488,21 @@ class LowerTraceSession(PassInstrumentationTool):
                 )
             )
             path_suffix = f"  →  {_ANSI_BLUE}{output_path}{_ANSI_RESET}" if output_path else ""
-            print(f"  [lower_trace] codegen/{index:02d}_codegen: CODEGEN (+{add_count}/-{del_count}){path_suffix}")
+            print(
+                f"  [lower_trace] codegen/{index:02d}_{name}: CODEGEN (+{add_count}/-{del_count}){path_suffix}"
+            )
             if self.should_generate_html:
                 with contextlib.suppress(Exception):
                     self.flush_html()
         except Exception as exc:
-            print(f"  {_ANSI_RED}[lower_trace] WARNING: post-codegen tracing failed: {exc}{_ANSI_RESET}")
+            print(
+                f"  {_ANSI_RED}[lower_trace] WARNING: post-codegen tracing failed ({name}): {exc}{_ANSI_RESET}"
+            )
 
         if self.should_print_terminal:
             from .diff import print_diff
 
-            print_diff(before_text, after_text, "codegen (TIR before)", "codegen (source after)")
+            print_diff(before_text, after_text, f"{name} (TIR before)", f"{name} (source after)")
 
         if patched_text is None:
             return result
@@ -479,7 +517,7 @@ class LowerTraceSession(PassInstrumentationTool):
             elif target_kind == "hip":
                 backend_hint = " Use execution_backend='cython' for edit-and-recompile support."
             print(
-                f"  {_ANSI_YELLOW}[lower_trace] codegen/{index:02d}_codegen: NOTE — user edits in "
+                f"  {_ANSI_YELLOW}[lower_trace] codegen/{index:02d}_{name}: NOTE — user edits in "
                 f"{output_path} are recorded for diff viewing, but were NOT recompiled because this "
                 f"backend already built a binary from TIR.{backend_hint}{_ANSI_RESET}"
             )
@@ -492,7 +530,9 @@ class LowerTraceSession(PassInstrumentationTool):
         with contextlib.suppress(Exception):
             self.flush_html()
         if self.should_generate_html and self.records and self.script_dir is not None:
-            print(f"  [lower_trace] Final HTML report: {_ANSI_BLUE}{os.path.join(self.script_dir, 'report.html')}{_ANSI_RESET}")
+            print(
+                f"  [lower_trace] Final HTML report: {_ANSI_BLUE}{os.path.join(self.script_dir, 'report.html')}{_ANSI_RESET}"
+            )
 
     def reset(self) -> None:
         """Clear this session's records; primarily useful to unit tests."""
@@ -535,7 +575,9 @@ class _LowerTraceObserver(PassEventObserver):
         )
         tag = "CHANGED" if changed else "NO-OP"
         color = _ANSI_GREEN if changed else _ANSI_DIM
-        print(f"  [lower_trace] {phase}/{event.sequence:02d}_{pass_name}: {color}{tag}{_ANSI_RESET}")
+        print(
+            f"  [lower_trace] {phase}/{event.sequence:02d}_{pass_name}: {color}{tag}{_ANSI_RESET}"
+        )
 
         if self.session.should_generate_html:
             with contextlib.suppress(Exception):
@@ -568,13 +610,17 @@ class _LowerTraceObserver(PassEventObserver):
                     parent_index=event.parent_sequence,
                 )
             )
-            print(f"  {_ANSI_RED}[lower_trace] {phase}/{event.sequence:02d}_{pass_name}: FAILED ({error_msg}){_ANSI_RESET}")
+            print(
+                f"  {_ANSI_RED}[lower_trace] {phase}/{event.sequence:02d}_{pass_name}: FAILED ({error_msg}){_ANSI_RESET}"
+            )
         if self.session.should_generate_html:
             with contextlib.suppress(Exception):
                 self.session.flush_html()
 
     def callback_mismatch(self, actual: str, expected: str | None) -> None:
-        print(f"  {_ANSI_RED}[lower_trace] WARNING: unmatched after-pass callback for {actual!r}; expected {expected!r}{_ANSI_RESET}")
+        print(
+            f"  {_ANSI_RED}[lower_trace] WARNING: unmatched after-pass callback for {actual!r}; expected {expected!r}{_ANSI_RESET}"
+        )
 
 
 def _remember_session(session: LowerTraceSession | None) -> None:
@@ -660,9 +706,13 @@ def enable(*, mode=_UNSET, trace_dir=_UNSET, codegen_output=_UNSET) -> None:
         if trace_dir is not _UNSET:
             _trace_dir_override = trace_dir if trace_dir is None else str(trace_dir)
         if codegen_output is not _UNSET:
-            _codegen_output_path_override = codegen_output if codegen_output is None else str(codegen_output)
+            _codegen_output_path_override = (
+                codegen_output if codegen_output is None else str(codegen_output)
+            )
         config = _snapshot_config()
-        register_pass_instrumentation_tool("lower_trace", lambda: _create_lower_trace_session(config))
+        register_pass_instrumentation_tool(
+            "lower_trace", lambda: _create_lower_trace_session(config)
+        )
     print("[lower_trace] IR pass tracing enabled with per-compilation PassInstrument sessions.")
 
 
@@ -686,11 +736,13 @@ def reset() -> None:
 
 
 def activate() -> None:
-    """TileLang entry-point hook used when ``TL_LOWER_TRACE`` is enabled."""
-    enable()
+    """Activate environment-requested tracing for TileLang."""
+    if env_mode() is not None:
+        enable()
 
 
 __all__ = [
+    "activate",
     "LowerRecord",
     "LowerTraceSession",
     "STATUS_CODEGEN",
@@ -698,7 +750,6 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_SKIPPED",
     "create_pass_instrument",
-    "activate",
     "current_lower_trace_session",
     "disable",
     "enable",

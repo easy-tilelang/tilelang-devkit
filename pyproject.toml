@@ -31,7 +31,7 @@ classifiers = [
 dependencies = []
 
 [project.entry-points."tilelang.instrumentation_tools"]
-lower_trace = "tilelang_devkit.lower_trace.tilelang_adapter:activate"
+lower_trace = "tilelang_devkit.lower_trace:activate"
 
 [project.optional-dependencies]
 dev = [
