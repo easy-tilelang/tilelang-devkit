@@ -5,7 +5,18 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  test:
+    name: Test release commit
+    uses: ./.github/workflows/test.yml
+
   build:
     name: Build distributions
     runs-on: ubuntu-latest
@@ -20,21 +31,50 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install build tool
-        run: pip install build
+      - name: Install build tools
+        run: python -m pip install build twine
 
       - name: Build sdist and wheel
-        run: python -m build
+        # Build both from the Git checkout so the wheel retains SCM commit metadata.
+        run: python -m build --sdist --wheel
+
+      - name: Check distribution metadata
+        run: python -m twine check --strict dist/*
+
+      - name: Verify installed release wheel
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          wheels=("$GITHUB_WORKSPACE"/dist/*.whl)
+          sdists=("$GITHUB_WORKSPACE"/dist/*.tar.gz)
+          test "${#wheels[@]}" -eq 1
+          test -f "${wheels[0]}"
+          test "${#sdists[@]}" -eq 1
+          test -f "${sdists[0]}"
+          verify_dir=$(mktemp -d "$RUNNER_TEMP/release-check.XXXXXX")
+          python -m venv "$verify_dir/venv"
+          verify_python="$verify_dir/venv/bin/python"
+          "$verify_python" -m pip install "${wheels[0]}" pytest packaging
+          cd "$verify_dir"
+          "$verify_python" "$GITHUB_WORKSPACE/scripts/verify_release.py" \
+            --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+          "$verify_python" -m pytest --import-mode=importlib \
+            "$GITHUB_WORKSPACE/tests/lower_trace/test_smoke.py" -q
+          "$verify_python" -m pytest --import-mode=importlib \
+            "$GITHUB_WORKSPACE/tests/lower_trace/test_public_api.py" -k package_import -q
 
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
 
   publish:
     name: Publish to PyPI
-    needs: build
+    needs: [test, build]
     runs-on: ubuntu-latest
     environment: pypi  # must match the environment name registered with PyPI
     permissions:

@@ -118,6 +118,44 @@ Importing `tilelang_devkit.lower_trace` does not eagerly import TileLang. The
 TileLang-specific adapter is loaded only when its API or plugin entry point is
 used.
 
+## Releasing (maintainers)
+
+Versions come from Git tags through setuptools-scm; do not edit `_version.py`.
+Use `v` followed by a Python package version; prerelease versions are also
+supported. Replace `<version>` below with the actual version number, then run
+from a clean checkout of the intended release commit:
+
+```bash
+git tag -a "v<version>" -m "Release <version>"
+git push origin "v<version>"
+```
+
+Pushing the tag starts **Publish to PyPI**. It calls the reusable test workflow
+on the tagged commit and builds the sdist and wheel in parallel. The build job
+builds both distributions directly from the Git checkout to retain commit
+metadata in the wheel. It checks distribution metadata, installs the wheel
+in an isolated environment,
+verifies its version, commit metadata, plugin entry point and `py.typed`, and
+runs framework-neutral smoke/import tests. Publishing requires both the build
+checks and the complete test suite (including TileLang integration) to pass.
+The publish job uploads the same validated artifacts without rebuilding them.
+Branch pushes and pull requests run tests independently; tag pushes do not
+start a second standalone test workflow.
+
+Publishing uses PyPI Trusted Publishing with this repository,
+`.github/workflows/workflow.yml`, and the GitHub environment `pypi`. Keep the
+workflow filename and environment name aligned with the PyPI publisher
+configuration. Only the publish job receives OIDC token permission.
+
+Inspect **Actions → Publish to PyPI** for the failing job and logs. A failed or
+cancelled test/build prevents publishing. For a transient failure before any
+upload, rerun the failed jobs. If an upload failed, check which files reached
+PyPI before retrying: an already uploaded file cannot be overwritten, and a
+partial upload may require manual recovery. For a code or packaging fix,
+create a new version and tag; do not move a published tag or reuse its version.
+On each release, confirm tests finished before the upload and verify the
+resulting PyPI version page. This workflow does not create a GitHub Release.
+
 ## License
 
 Apache-2.0
